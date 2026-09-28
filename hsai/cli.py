@@ -88,6 +88,12 @@ def cmd_mod(args) -> int:
     win64 = find_win64_dir(game)
     if args.action == "uninstall":
         modinstall.uninstall_mod(win64, log, remove_ue4ss=args.all)
+    elif args.action in ("enable", "disable"):
+        modinstall.set_mod_enabled(win64, args.action == "enable", log)
+    elif args.action in ("on", "off"):
+        modinstall.set_ue4ss_enabled(win64, args.action == "on", log)
+    elif args.action == "diag":
+        modinstall.diagnostics(win64, log)
     else:
         log(f"game: {game}")
         log(f"ue4ss: {'installed' if modinstall.ue4ss_installed(win64) else 'missing'}  layout root: {modinstall.ue4ss_root(win64)}")
@@ -267,7 +273,8 @@ def build_parser() -> argparse.ArgumentParser:
     s.set_defaults(fn=cmd_doctor)
 
     s = sub.add_parser("mod", help="install / uninstall / status of the UE4SS telemetry mod")
-    s.add_argument("action", choices=["install", "uninstall", "status"])
+    s.add_argument("action", choices=["install", "uninstall", "status", "enable", "disable", "on", "off", "diag"],
+                   help="enable/disable = the HSAI mod only; on/off = UE4SS as a whole (off = unmodified game); diag = print logs")
     s.add_argument("--dir", help="Half Sword install folder (if Steam auto-detection fails)")
     s.add_argument("--zip", help="use a local UE4SS zip instead of downloading")
     s.add_argument("--all", action="store_true", help="uninstall: also remove UE4SS")

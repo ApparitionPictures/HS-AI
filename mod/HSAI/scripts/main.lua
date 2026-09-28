@@ -23,6 +23,7 @@ local PROTO = 1
 local cfg = {
     pipe = "\\\\.\\pipe\\hsai_telemetry",
     dir = nil,                 -- defaults to %LOCALAPPDATA%\HSAI
+    start_delay_ms = 3000,     -- wait this long after a level loads before touching game objects
     tick_ms = 6,               -- scheduling period of the async loop (game thread work happens once per frame at most)
     rescan_ms = 2000,          -- how often to rescan the object array for fighters
     max_enemies = 4,
@@ -51,7 +52,7 @@ local function loadConfig()
                 local t = {}
                 for item in v:gmatch("[^,%s]+") do t[#t + 1] = item end
                 cfg[k] = t
-            elseif k == "tick_ms" or k == "rescan_ms" or k == "max_enemies" then
+            elseif k == "tick_ms" or k == "rescan_ms" or k == "max_enemies" or k == "start_delay_ms" then
                 cfg[k] = tonumber(v) or cfg[k]
             elseif k == "file_fallback" or k == "debug" then
                 cfg[k] = (v == "1" or v == "true")
@@ -87,7 +88,15 @@ local STATUS_FILE = cfg.dir .. "\\mod_status.txt"
 --  small helpers
 -- ---------------------------------------------------------------------
 local function isValid(o)
-    return o ~= nil and o.IsValid ~= nil and o:IsValid()
+    local ok, v = pcall(function() return o ~= nil and o.IsValid ~= nil and o:IsValid() end)
+    return ok and v == true
+end
+
+local function addr(o)
+    local ok, a = pcall(function() return o:GetAddress() end)
+    if ok and a then return a end
+    local ok2, n = pcall(function() return o:GetFullName() end)
+    return ok2 and n or tostring(o)
 end
 
 local function tryGet(obj, name)
@@ -239,7 +248,7 @@ local function rescanFighters()
         if ok and list then
             for _, obj in ipairs(list) do
                 if looksLikeFighter(obj) then
-                    local key = obj:GetAddress()
+                    local key = addr(obj)
                     if not seen[key] then
                         seen[key] = true
                         found[#found + 1] = { obj = obj }
@@ -248,13 +257,14 @@ local function rescanFighters()
             end
         end
     end
-    if #found == 0 then
-        -- fallback for renamed classes: any Character that has a Health number
+    if #found == 0 and (nowMs() - (cache.lastFallbackScan or -1e9)) > 10000 then
+        -- fallback for renamed classes: any Character that has a Health number (slow, rate limited)
+        cache.lastFallbackScan = nowMs()
         local ok, list = pcall(function() return FindAllOf("Character") end)
         if ok and list then
             for _, obj in ipairs(list) do
                 if looksLikeFighter(obj) then
-                    local key = obj:GetAddress()
+                    local key = addr(obj)
                     if not seen[key] then
                         seen[key] = true
                         found[#found + 1] = { obj = obj }
@@ -395,7 +405,7 @@ local function playerAndEnemies()
     local playerTeam = player and tryNum(player, "Team Int", -1) or -1
     local enemies = {}
     for _, f in ipairs(cache.fighters) do
-        if isValid(f.obj) and (player == nil or f.obj:GetAddress() ~= player:GetAddress()) then
+        if isValid(f.obj) and (player == nil or addr(f.obj) ~= addr(player)) then
             local t = tryNum(f.obj, "Team Int", -1)
             if t ~= playerTeam then enemies[#enemies + 1] = f end
         end
@@ -511,7 +521,7 @@ local function tick()
         out[#out + 1] = "P1"
         local pf = nil
         for _, f in ipairs(cache.fighters) do
-            if isValid(f.obj) and f.obj:GetAddress() == player:GetAddress() then pf = f end
+            if isValid(f.obj) and addr(f.obj) == addr(player) then pf = f end
         end
         if pf == nil then pf = { obj = player } end
         fighterFields(pf, out)
@@ -528,29 +538,60 @@ local function tick()
     emit(table.concat(out, "|"))
 end
 
+-- The loop only runs once the game has actually entered a level (the player
+-- controller has restarted at least once) and a settle delay has passed, so
+-- nothing touches engine objects while the game is still booting.
+local ready = false
+local readyAt = 0
+local tickErrors = 0
+
 local function schedule()
+    if not ready or nowMs() < readyAt then return false end
     if pending then return false end
     pending = true
     ExecuteInGameThread(function()
         local ok, err = pcall(tick)
         if not ok then
             pending = false
-            if cfg.debug then log("tick error: " .. tostring(err)) end
+            tickErrors = tickErrors + 1
+            if cfg.debug or tickErrors <= 3 then log("tick error: " .. tostring(err)) end
+            if tickErrors > 200 then
+                ready = false
+                log("too many tick errors, telemetry loop paused until the next level load")
+            end
         end
     end)
     return false
 end
 
--- ---------------------------------------------------------------------
---  start-up
--- ---------------------------------------------------------------------
-writeSmallFile(STATUS_FILE, string.format("loaded=1\nproto=%d\ntime=%s\npipe=%s\nfile=%s\n",
-    PROTO, os.date("%Y-%m-%d %H:%M:%S"), cfg.pipe, TELEMETRY_FILE))
-
-RegisterHook("/Script/Engine.PlayerController:ClientRestart", function(self)
+local function onLevelEntered()
     cache.pc = nil
     cache.forceRescan = true
+    tickErrors = 0
+    readyAt = nowMs() + (tonumber(cfg.start_delay_ms) or 3000)
+    ready = true
+    writeSmallFile(STATUS_FILE, string.format("loaded=1\nproto=%d\ntime=%s\npipe=%s\nfile=%s\nlevel_entered=1\n",
+        PROTO, os.date("%Y-%m-%d %H:%M:%S"), cfg.pipe, TELEMETRY_FILE))
+end
+
+-- ---------------------------------------------------------------------
+--  start-up (everything guarded: a failure here must never take the game down)
+-- ---------------------------------------------------------------------
+pcall(function()
+    writeSmallFile(STATUS_FILE, string.format("loaded=1\nproto=%d\ntime=%s\npipe=%s\nfile=%s\nlevel_entered=0\n",
+        PROTO, os.date("%Y-%m-%d %H:%M:%S"), cfg.pipe, TELEMETRY_FILE))
 end)
 
-LoopAsync(cfg.tick_ms, schedule)
-log(string.format("telemetry mod loaded (proto %d), pipe=%s", PROTO, cfg.pipe))
+local okHook, errHook = pcall(function()
+    RegisterHook("/Script/Engine.PlayerController:ClientRestart", function(self)
+        pcall(onLevelEntered)
+    end)
+end)
+if not okHook then
+    log("ClientRestart hook failed (" .. tostring(errHook) .. "), falling back to a delayed start")
+    pcall(function() ExecuteWithDelay(15000, function() pcall(onLevelEntered) end) end)
+end
+
+local okLoop, errLoop = pcall(function() LoopAsync(cfg.tick_ms, schedule) end)
+if not okLoop then log("LoopAsync failed: " .. tostring(errLoop)) end
+log(string.format("telemetry mod loaded (proto %d), waiting for a level; pipe=%s", PROTO, cfg.pipe))

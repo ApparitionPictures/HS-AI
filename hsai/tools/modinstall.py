@@ -121,12 +121,15 @@ def install_ue4ss(win64: Path, log: Callable[[str], None], zip_path: Optional[Pa
                 f"Folder now contains: {present}")
         log(f"UE4SS extracted (layout root: {ue4ss_root(win64)})")
     ini = ue4ss_root(win64) / "UE4SS-settings.ini"
-    if ini.exists() and hide_console:
+    if ini.exists():
         txt = ini.read_text(encoding="utf-8", errors="replace")
-        for key in ("ConsoleEnabled", "GuiConsoleEnabled", "GuiConsoleVisible"):
-            txt = _set_ini(txt, key, "0")
+        # the UObject array cache is the #1 cause of UE4SS start-up crashes on UE5 games
+        txt = _set_ini(txt, "bUseUObjectArrayCache", "false")
+        if hide_console:
+            for key in ("ConsoleEnabled", "GuiConsoleEnabled", "GuiConsoleVisible"):
+                txt = _set_ini(txt, key, "0")
         ini.write_text(txt, encoding="utf-8")
-        log("UE4SS console windows disabled (edit ue4ss/UE4SS-settings.ini to re-enable)")
+        log("UE4SS settings: bUseUObjectArrayCache=false" + (", console windows hidden" if hide_console else ""))
 
 
 def _check_writable(win64: Path) -> None:
@@ -211,3 +214,96 @@ def install_all(log: Callable[[str], None], install_dir: str = "", app_id: int =
     log("verification: UE4SS present, HSAI mod present and enabled")
     log("Now start Half Sword once. On the first start Windows may show a SmartScreen/antivirus prompt for UE4SS; allow it.")
     return win64
+
+
+# ---------------------------------------------------------------------------
+# diagnostics / toggles
+# ---------------------------------------------------------------------------
+
+def set_mod_enabled(win64: Path, enabled: bool, log: Callable[[str], None]) -> None:
+    mods = ue4ss_root(win64) / "Mods"
+    flag = mods / "HSAI" / "enabled.txt"
+    if enabled:
+        flag.parent.mkdir(parents=True, exist_ok=True)
+        flag.write_text("", encoding="utf-8")
+    elif flag.exists():
+        flag.unlink()
+    mods_txt = mods / "mods.txt"
+    if mods_txt.exists():
+        lines = [l for l in mods_txt.read_text(encoding="utf-8", errors="replace").splitlines()
+                 if not l.strip().replace(" ", "").lower().startswith("hsai:")]
+        if enabled:
+            lines.insert(0, "HSAI : 1")
+        else:
+            lines.insert(0, "HSAI : 0")
+        mods_txt.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    log(f"HSAI mod {'enabled' if enabled else 'disabled'} (UE4SS itself stays installed)")
+
+
+def set_ue4ss_enabled(win64: Path, enabled: bool, log: Callable[[str], None]) -> None:
+    """Turn UE4SS on/off by renaming the proxy DLL. Off = the game runs completely unmodified."""
+    on, off = win64 / "dwmapi.dll", win64 / "dwmapi.dll.disabled"
+    if enabled and off.exists():
+        off.replace(on)
+    elif not enabled and on.exists():
+        on.replace(off)
+    log(f"UE4SS {'ON' if (win64 / 'dwmapi.dll').exists() else 'OFF (game runs without any mod)'}")
+
+
+def _tail(path: Path, n: int = 60) -> str:
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        return "\n".join(lines[-n:])
+    except Exception as e:
+        return f"<cannot read {path}: {e}>"
+
+
+def diagnostics(win64: Path, log: Callable[[str], None]) -> None:
+    import glob
+    root = ue4ss_root(win64)
+    log(f"win64: {win64}")
+    log(f"proxy dwmapi.dll: {'present' if (win64 / 'dwmapi.dll').exists() else 'absent'}"
+        f"{' (disabled copy present)' if (win64 / 'dwmapi.dll.disabled').exists() else ''}")
+    log(f"ue4ss root: {root}  UE4SS.dll: {'present' if (root / 'UE4SS.dll').exists() else 'absent'}")
+    ini = root / "UE4SS-settings.ini"
+    if ini.exists():
+        keys = ("bUseUObjectArrayCache", "ConsoleEnabled", "GuiConsoleEnabled", "GraphicsAPI", "MajorVersion", "MinorVersion")
+        vals = [l.strip() for l in ini.read_text(encoding="utf-8", errors="replace").splitlines()
+                if any(l.strip().startswith(k) for k in keys)]
+        log("settings: " + "; ".join(vals))
+    mods_txt = root / "Mods" / "mods.txt"
+    if mods_txt.exists():
+        log("mods.txt: " + " | ".join(l.strip() for l in mods_txt.read_text(encoding="utf-8", errors="replace").splitlines() if l.strip() and not l.startswith(";")))
+    log(f"HSAI mod files: {'present' if mod_installed(win64) else 'absent'}, enabled flag: {(root / 'Mods' / 'HSAI' / 'enabled.txt').exists()}")
+    st = local_dir() / "mod_status.txt"
+    log("mod_status.txt: " + (st.read_text(encoding="utf-8").replace("\n", " ") if st.exists() else "never written"))
+    for cand in (root / "UE4SS.log", win64 / "UE4SS.log"):
+        if cand.exists():
+            log(f"---- {cand} (last 60 lines) ----")
+            log(_tail(cand, 60))
+            break
+    else:
+        log("UE4SS.log not found (UE4SS never started, or the proxy DLL did not load)")
+    base = Path(os.environ.get("LOCALAPPDATA", "")) / "HalfSwordUE5" / "Saved"
+    game_log = base / "Logs" / "HalfSwordUE5.log"
+    if game_log.exists():
+        txt = game_log.read_text(encoding="utf-8", errors="replace").splitlines()
+        hits = [l for l in txt if any(k in l for k in ("Fatal", "fatal", "Error:", "Assertion", "Exception", "UE4SS", "ue4ss"))]
+        log(f"---- {game_log}: {len(txt)} lines; relevant lines (last 25) ----")
+        log("\n".join(hits[-25:]) if hits else "(no error lines found)")
+        log("---- game log tail (last 15 lines) ----")
+        log("\n".join(txt[-15:]))
+    else:
+        log(f"game log not found at {game_log}")
+    crashes = sorted(glob.glob(str(base / "Crashes" / "*")), key=os.path.getmtime)
+    if crashes:
+        latest = Path(crashes[-1])
+        log(f"---- latest crash folder: {latest.name} ----")
+        for f in latest.glob("CrashContext.runtime-xml"):
+            txt = f.read_text(encoding="utf-8", errors="replace")
+            import re
+            for tag in ("ErrorMessage", "CallStack"):
+                m = re.search(rf"<{tag}>(.*?)</{tag}>", txt, re.S)
+                if m:
+                    body = m.group(1).strip().replace("&#10;", "\n")
+                    log(f"{tag}: " + "\n".join(body.splitlines()[:12]))
