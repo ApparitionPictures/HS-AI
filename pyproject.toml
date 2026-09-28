@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hsai"
+version = "0.1.0"
+description = "Half Sword AI: 60 Hz real-time reinforcement-learning agent with NVIDIA-optimized inference"
+requires-python = ">=3.10"
+readme = "README.md"
+dependencies = [
+    "numpy>=1.24,<3",
+    "pyyaml>=6",
+    "rich>=13",
+]
+
+[project.optional-dependencies]
+windows = [
+    "bettercam>=1.0",
+    "opencv-python>=4.8",
+    "mss>=9",
+]
+trt = [
+    "onnx>=1.15",
+    "tensorrt>=10.0",
+]
+dev = [
+    "pytest>=7",
+]
+
+[project.scripts]
+hsai = "hsai.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["hsai*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
