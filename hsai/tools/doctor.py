@@ -121,7 +121,9 @@ def _live_checks(cfg: Config, rep: Report) -> None:
             from ..capture import ScreenCapture
             from .game_env import capture_region
             cap = ScreenCapture(cfg.capture.backend, cfg.capture.monitor_index, cfg.capture.target_fps, capture_region(cfg)).start()
-            n = 60
+            for _ in range(15):  # warm-up (first frames include device init)
+                cap.get_frame()
+            n = 120
             dark = 0
             t0 = time.perf_counter()
             for _ in range(n):
@@ -130,8 +132,11 @@ def _live_checks(cfg: Config, rep: Report) -> None:
                     dark += 1
             fps = n / (time.perf_counter() - t0)
             cap.stop()
+            hint = ""
+            if fps < cfg.game.target_fps * 0.9:
+                hint = " -> below target: set the Windows display to 2560x1440 (or 1920x1080) while training, and close overlays"
             rep.add(OK if fps >= cfg.game.target_fps * 0.9 else WARN, "capture",
-                    f"{cap.backend} {cap.width}x{cap.height} at {fps:.0f} fps" + (" (frames are black!)" if dark > n // 2 else ""))
+                    f"{cap.backend} region {cap.width}x{cap.height} at {fps:.0f} fps" + (" (frames are black!)" if dark > n // 2 else "") + hint)
         except Exception as ex:
             rep.add(FAIL, "capture", repr(ex))
 

@@ -9,7 +9,7 @@ import numpy as np
 from ..capture import FramePreprocessor, ScreenCapture
 from ..config import Config
 from ..env.episode import is_fight_live
-from .game_env import capture_region, make_telemetry
+from .game_env import capture_region, make_telemetry, preproc_crop
 
 
 def run_watch(cfg: Config, log: Callable[[str], None] = print, seconds: float = 0.0, device: str = "cuda") -> None:
@@ -17,7 +17,7 @@ def run_watch(cfg: Config, log: Callable[[str], None] = print, seconds: float = 
     dev = device if torch.cuda.is_available() else "cpu"
     tel = make_telemetry(cfg)
     cap = ScreenCapture(cfg.capture.backend, cfg.capture.monitor_index, cfg.capture.target_fps, capture_region(cfg)).start()
-    pre = FramePreprocessor(cfg.obs.size, cfg.obs.stack, cfg.obs.gray, cfg.obs.crop, device=dev)
+    pre = FramePreprocessor(cfg.obs.size, cfg.obs.stack, cfg.obs.gray, preproc_crop(cfg), device=dev)
     try:
         import cv2
     except Exception:

@@ -14,11 +14,26 @@ from ..util.win32 import make_dpi_aware, screen_size, set_process_priority
 
 
 def capture_region(cfg: Config):
-    if not cfg.capture.region:
+    """Absolute pixel region to capture.  Defaults to the observation crop so the
+    DXGI copy only covers the pixels the network will see (matters at 4K)."""
+    region = cfg.capture.region or cfg.obs.crop
+    if not region:
         return None
     w, h = screen_size()
-    l, t, r, b = cfg.capture.region
-    return (int(l * w), int(t * h), int(r * w), int(b * h))
+    l, t, r, b = region
+    x0, y0, x1, y1 = int(l * w), int(t * h), int(r * w), int(b * h)
+    # DXGI wants even-aligned, non-empty rectangles
+    x0, y0 = x0 - (x0 % 2), y0 - (y0 % 2)
+    x1, y1 = max(x0 + 2, x1 - (x1 % 2)), max(y0 + 2, y1 - (y1 % 2))
+    return (x0, y0, x1, y1)
+
+
+def preproc_crop(cfg: Config):
+    """The frame handed to the preprocessor is already cropped when the capture
+    region equals obs.crop, so crop nothing further in that case."""
+    if cfg.capture.region:
+        return cfg.obs.crop
+    return [0.0, 0.0, 1.0, 1.0]
 
 
 def make_telemetry(cfg: Config) -> TelemetryReader:
@@ -38,7 +53,7 @@ def make_game_env(cfg: Config, space: ActionSpace, feat: StateFeaturizer, log: C
     set_process_priority(high=True)
     capture = ScreenCapture(cfg.capture.backend, cfg.capture.monitor_index, cfg.capture.target_fps, capture_region(cfg)).start()
     log(f"[capture] {capture.backend} {capture.width}x{capture.height} @ {cfg.capture.target_fps} fps")
-    preproc = FramePreprocessor(cfg.obs.size, cfg.obs.stack, cfg.obs.gray, cfg.obs.crop, device=device)
+    preproc = FramePreprocessor(cfg.obs.size, cfg.obs.stack, cfg.obs.gray, preproc_crop(cfg), device=device)
     telemetry = make_telemetry(cfg)
     commands = CommandWriter(cfg.telemetry.cmd_path)
     controller = make_controller(cfg)

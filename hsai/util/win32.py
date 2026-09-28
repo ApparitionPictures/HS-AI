@@ -88,9 +88,9 @@ def find_game_window(title_contains: str, process_name: str = "") -> Optional[in
     """Return the hwnd of the game window (by title substring, else by process exe name)."""
     if not IS_WINDOWS:
         return None
-    tl = title_contains.lower()
+    tl = title_contains.lower().replace(" ", "")
     for hwnd, title in enum_windows():
-        if tl and tl in title.lower():
+        if tl and tl in title.lower().replace(" ", ""):
             return hwnd
     if process_name:
         pn = process_name.lower()

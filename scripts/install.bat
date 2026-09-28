@@ -38,16 +38,29 @@ if errorlevel 1 (
 echo.
 echo Installing the rest...
 "%VPY%" -m pip install -r requirements.txt || goto :fail
-"%VPY%" -m pip install -e . || goto :fail
+"%VPY%" -m pip install -e . || echo (optional editable install skipped; hsai.bat still works)
 if /I "%~1"=="--trt" (
   echo Installing TensorRT (optional fastest inference backend)...
   "%VPY%" -m pip install tensorrt onnx
 )
 echo.
-echo Running setup (installs the game mod and checks the system)...
-"%VPY%" -m hsai setup
+echo ============================================================
+echo  Installing UE4SS + the HS-AI mod into the game folder ...
+echo ============================================================
+"%VPY%" -m hsai mod install
+if errorlevel 1 (
+  echo.
+  echo The mod install FAILED. Read the message above. Common fixes:
+  echo   - permission problem: run scripts\install_mod_admin.bat
+  echo   - antivirus removed UE4SS: add the Half Sword folder to the exclusions, run scripts\install_mod.bat
+  echo   - no internet: download the UE4SS zip in a browser and run: hsai mod install --zip "path\to\UE4SS.zip"
+)
 echo.
-echo Done. Use hsai.bat for everything, e.g.:   hsai doctor     hsai train --hours 2
+echo Running the system check...
+"%VPY%" -m hsai doctor --quick --no-bench
+echo.
+echo Done. Next: start Half Sword, enter a fight, then run scripts\doctor.bat
+echo Then record your menu flow with scripts\record_macro.bat and train with scripts\train.bat
 pause
 exit /b 0
 :fail

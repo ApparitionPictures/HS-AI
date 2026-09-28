@@ -79,25 +79,47 @@ def resolve_ue4ss_url(log: Callable[[str], None], prefer_stable: bool = False) -
 
 
 def download_ue4ss(log: Callable[[str], None], prefer_stable: bool = False) -> bytes:
-    url = resolve_ue4ss_url(log, prefer_stable)
-    log(f"downloading {url} ...")
-    data = _http_get(url)
-    log(f"downloaded {len(data) / 1e6:.1f} MB")
-    return data
+    urls = [resolve_ue4ss_url(log, prefer_stable)]
+    if urls[0] != UE4SS_STABLE_URL:
+        urls.append(UE4SS_STABLE_URL)
+    last: Optional[Exception] = None
+    for url in urls:
+        for attempt in (1, 2):
+            try:
+                log(f"downloading {url} (attempt {attempt}) ...")
+                data = _http_get(url)
+                if len(data) < 1_000_000:
+                    raise RuntimeError(f"download too small ({len(data)} bytes)")
+                log(f"downloaded {len(data) / 1e6:.1f} MB")
+                return data
+            except Exception as e:
+                last = e
+                log(f"  download failed: {type(e).__name__}: {e}")
+    raise RuntimeError(
+        f"could not download UE4SS ({last}). Download it manually in a browser from\n"
+        f"  {UE4SS_STABLE_URL}\n  and run:  hsai mod install --zip \"<path to the zip>\"")
 
 
 def install_ue4ss(win64: Path, log: Callable[[str], None], zip_path: Optional[Path] = None, hide_console: bool = True,
                   prefer_stable: bool = False) -> None:
+    _check_writable(win64)
     if ue4ss_installed(win64):
         log(f"UE4SS already installed ({ue4ss_root(win64)}), keeping it")
     else:
         data = Path(zip_path).read_bytes() if zip_path else download_ue4ss(log, prefer_stable)
         with zipfile.ZipFile(io.BytesIO(data)) as z:
             names = z.namelist()
-            if not any(n.lower().endswith("dwmapi.dll") for n in names):
-                raise RuntimeError("unexpected UE4SS zip layout (no dwmapi.dll)")
+            if not any(n.lower().endswith((".dll",)) for n in names) or not any(n.lower().endswith("ue4ss.dll") for n in names):
+                raise RuntimeError(f"unexpected UE4SS zip layout: {names[:8]}")
+            log(f"extracting {len(names)} files into {win64} ...")
             z.extractall(win64)
-        log(f"UE4SS extracted into {win64} (layout root: {ue4ss_root(win64)})")
+        if not ue4ss_installed(win64):
+            present = sorted(p.name for p in win64.iterdir())[:30]
+            raise RuntimeError(
+                "UE4SS files are missing right after extraction. Your antivirus may have quarantined UE4SS.dll/dwmapi.dll "
+                "(a known false positive): add the game folder to its exclusions and run `hsai mod install` again. "
+                f"Folder now contains: {present}")
+        log(f"UE4SS extracted (layout root: {ue4ss_root(win64)})")
     ini = ue4ss_root(win64) / "UE4SS-settings.ini"
     if ini.exists() and hide_console:
         txt = ini.read_text(encoding="utf-8", errors="replace")
@@ -105,6 +127,17 @@ def install_ue4ss(win64: Path, log: Callable[[str], None], zip_path: Optional[Pa
             txt = _set_ini(txt, key, "0")
         ini.write_text(txt, encoding="utf-8")
         log("UE4SS console windows disabled (edit ue4ss/UE4SS-settings.ini to re-enable)")
+
+
+def _check_writable(win64: Path) -> None:
+    probe = win64 / ".hsai_write_probe"
+    try:
+        probe.write_text("x", encoding="utf-8")
+        probe.unlink()
+    except PermissionError as e:
+        raise PermissionError(
+            f"no permission to write into {win64}. Right-click scripts\\install_mod_admin.bat and choose "
+            f"'Run as administrator' (or run your terminal as administrator) and try again. ({e})") from e
 
 
 def _set_ini(txt: str, key: str, value: str) -> str:
@@ -170,6 +203,11 @@ def install_all(log: Callable[[str], None], install_dir: str = "", app_id: int =
     if win64 is None:
         raise FileNotFoundError(f"could not find the Binaries\\Win64 folder under {game}")
     log(f"game folder: {game}")
+    log(f"binaries folder: {win64}")
     install_ue4ss(win64, log, zip_path=zip_path, hide_console=hide_console, prefer_stable=prefer_stable)
     install_mod(win64, log)
+    if not mod_installed(win64) or not mod_enabled(win64):
+        raise RuntimeError("mod files were copied but the verification failed; run `hsai mod status` and report the output")
+    log("verification: UE4SS present, HSAI mod present and enabled")
+    log("Now start Half Sword once. On the first start Windows may show a SmartScreen/antivirus prompt for UE4SS; allow it.")
     return win64

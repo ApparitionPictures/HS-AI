@@ -18,7 +18,7 @@ from ..input.rawinput import RawInputListener
 from ..rl.actor import build_dims
 from ..rl.spool import RolloutBuffer, SpoolWriter
 from ..util.win32 import VK, key_is_down, vk_from_name
-from .game_env import capture_region, make_telemetry
+from .game_env import capture_region, make_telemetry, preproc_crop
 
 
 def run_record(cfg: Config, log: Callable[[str], None] = print, minutes: float = 0.0, device: str = "cuda") -> None:
@@ -27,7 +27,7 @@ def run_record(cfg: Config, log: Callable[[str], None] = print, minutes: float =
     space, feat, img_ch = build_dims(cfg)
     tel = make_telemetry(cfg)
     cap = ScreenCapture(cfg.capture.backend, cfg.capture.monitor_index, cfg.capture.target_fps, capture_region(cfg)).start()
-    pre = FramePreprocessor(cfg.obs.size, cfg.obs.stack, cfg.obs.gray, cfg.obs.crop, device=dev)
+    pre = FramePreprocessor(cfg.obs.size, cfg.obs.stack, cfg.obs.gray, preproc_crop(cfg), device=dev)
     raw = RawInputListener().start()
     out_dir = cfg.resolve_path(cfg.paths.recordings_dir)
     writer = SpoolWriter(out_dir)

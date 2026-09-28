@@ -188,6 +188,26 @@ Tab = lock-on (pressed once when a fight starts), G = surrender/advance
   update renames them, `hsai doctor` will show no player/enemy data; the names
   are in `mod/HSAI/config.txt` and can be updated without touching code.
 
+## Troubleshooting
+
+* **doctor says `ue4ss: missing` / `hsai mod: missing`.** The mod install step
+  failed. Run `scripts\install_mod.bat` and read its message. If it says
+  permission denied, run `scripts\install_mod_admin.bat`. If your antivirus
+  quarantined `UE4SS.dll`/`dwmapi.dll` (a known false positive for UE4SS),
+  add the Half Sword folder to its exclusions and run the installer again. No
+  internet: download `UE4SS_v3.0.1.zip` from the UE4SS GitHub releases and run
+  `hsai mod install --zip "<path>"`.
+* **`telemetry: no data`.** The game must be running *inside a level* (a fight
+  or the Inn) with the mod loaded. `hsai mod status` shows whether the mod
+  ever loaded. If it never did, UE4SS did not start: check that `dwmapi.dll`
+  sits next to `HalfSwordUE5-Win64-Shipping.exe`.
+* **`capture` below 60 fps.** You are probably on a 4K desktop. Set the Windows
+  display resolution to 2560x1440 (or 1920x1080) while training; the capture
+  cost scales with desktop pixels, not with the game's render resolution.
+* **The game freezes or crashes at start after installing the mod.** Open
+  `ue4ss/UE4SS-settings.ini` and set `bUseUObjectArrayCache = false`, or
+  uninstall with `hsai mod uninstall --all`.
+
 ## Safety
 
 * Inputs are only sent while the Half Sword window is in the foreground.

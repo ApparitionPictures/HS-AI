@@ -43,8 +43,10 @@ def cmd_setup(args) -> int:
     try:
         install_all(log, cfg.game.install_dir, cfg.game.steam_app_id, hide_console=not args.console, prefer_stable=args.stable)
     except Exception as e:
-        log(f"mod install failed: {e}")
-        log("You can retry later with:  hsai mod install --dir \"<Half Sword folder>\"")
+        import traceback
+        log("MOD INSTALL FAILED: " + str(e))
+        log("details:\n" + traceback.format_exc())
+        log("Retry with scripts\\install_mod.bat (or install_mod_admin.bat if it is a permission problem).")
     local_dir().mkdir(parents=True, exist_ok=True)
     log("2/3 system check")
     from .tools.doctor import run_doctor
@@ -69,10 +71,16 @@ def cmd_mod(args) -> int:
     from .tools import modinstall
     from .tools.gamefind import find_game_dir, find_win64_dir
     if args.action == "install":
-        modinstall.install_all(log, args.dir or cfg.game.install_dir, cfg.game.steam_app_id,
-                               zip_path=Path(args.zip) if args.zip else None, hide_console=not args.console,
-                               prefer_stable=args.stable)
-        return 0
+        try:
+            modinstall.install_all(log, args.dir or cfg.game.install_dir, cfg.game.steam_app_id,
+                                   zip_path=Path(args.zip) if args.zip else None, hide_console=not args.console,
+                                   prefer_stable=args.stable)
+            return 0
+        except Exception as e:
+            import traceback
+            log("MOD INSTALL FAILED: " + str(e))
+            log("details:\n" + traceback.format_exc())
+            return 1
     game = find_game_dir(cfg.game.steam_app_id, args.dir or cfg.game.install_dir)
     if game is None:
         log("game not found")
