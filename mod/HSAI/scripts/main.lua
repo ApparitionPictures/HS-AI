@@ -134,6 +134,13 @@ local function tryCall(obj, fname, ...)
     return false, res
 end
 
+-- struct-returning UFunctions (FVector / FRotator) come back as Lua tables
+local function tryCallStruct(obj, fname, ...)
+    local ok, res = tryCall(obj, fname, ...)
+    if ok and (type(res) == "table" or type(res) == "userdata") then return true, res end
+    return false, res
+end
+
 local function f1(x)
     if x == nil then return "0" end
     return string.format("%.1f", x)
@@ -293,8 +300,10 @@ local function rescanFighters()
 end
 
 local function vec(v)
-    if v == nil then return 0, 0, 0 end
-    return v.X or 0, v.Y or 0, v.Z or 0
+    if type(v) ~= "table" and type(v) ~= "userdata" then return 0, 0, 0 end
+    local ok, x, y, z = pcall(function() return v.X or 0, v.Y or 0, v.Z or 0 end)
+    if ok then return x, y, z end
+    return 0, 0, 0
 end
 
 local function fighterFields(f, out)
@@ -305,13 +314,14 @@ local function fighterFields(f, out)
     out[#out + 1] = f1(tryNum(o, "All Body Tonus", 0))
     out[#out + 1] = tryBool(o, "DED") and "1" or "0"
     out[#out + 1] = tostring(math.floor(tryNum(o, "Team Int", -1)))
-    local okL, loc = tryCall(o, "K2_GetActorLocation")
+    local okL, loc = tryCallStruct(o, "K2_GetActorLocation")
     local x, y, z = 0, 0, 0
     if okL then x, y, z = vec(loc) end
     out[#out + 1] = f1(x); out[#out + 1] = f1(y); out[#out + 1] = f1(z)
-    local okR, rot = tryCall(o, "K2_GetActorRotation")
-    out[#out + 1] = f1(okR and rot and rot.Yaw or 0)
-    local okV, vel = tryCall(o, "GetVelocity")
+    local okR, rot = tryCallStruct(o, "K2_GetActorRotation")
+    local yawOk, yawV = pcall(function() return rot.Yaw end)
+    out[#out + 1] = f1((okR and yawOk and type(yawV) == "number") and yawV or 0)
+    local okV, vel = tryCallStruct(o, "GetVelocity")
     local vx, vy, vz = 0, 0, 0
     if okV then vx, vy, vz = vec(vel) end
     out[#out + 1] = f1(vx); out[#out + 1] = f1(vy); out[#out + 1] = f1(vz)
@@ -321,7 +331,7 @@ local function fighterFields(f, out)
         local have = 0
         local bx, by, bz = x, y, z
         if f.mesh ~= nil and f.bones ~= nil and f.bones[b] ~= nil then
-            local ok, p = tryCall(f.mesh, "GetSocketLocation", f.bones[b])
+            local ok, p = tryCallStruct(f.mesh, "GetSocketLocation", f.bones[b])
             if ok and p then
                 bx, by, bz = vec(p)
                 have = 1
@@ -372,8 +382,8 @@ local function spawnClassInFront(classPath, distanceCm, team)
         log("spawn: class not found " .. classPath)
         return false
     end
-    local okL, loc = tryCall(pawn, "K2_GetActorLocation")
-    local okR, rot = tryCall(pawn, "K2_GetActorRotation")
+    local okL, loc = tryCallStruct(pawn, "K2_GetActorLocation")
+    local okR, rot = tryCallStruct(pawn, "K2_GetActorRotation")
     if not okL then return false end
     local yaw = (okR and rot and rot.Yaw or 0) * math.pi / 180.0
     local x = loc.X + math.cos(yaw) * distanceCm
@@ -490,12 +500,12 @@ local function tick()
     local player, enemies = playerAndEnemies()
     local px, py, pz = 0, 0, 0
     if player then
-        local ok, loc = tryCall(player, "K2_GetActorLocation")
+        local ok, loc = tryCallStruct(player, "K2_GetActorLocation")
         if ok then px, py, pz = vec(loc) end
     end
     -- sort enemies by distance to the player
     for _, f in ipairs(enemies) do
-        local ok, loc = tryCall(f.obj, "K2_GetActorLocation")
+        local ok, loc = tryCallStruct(f.obj, "K2_GetActorLocation")
         local x, y, z = 0, 0, 0
         if ok then x, y, z = vec(loc) end
         f.dist = math.sqrt((x - px) ^ 2 + (y - py) ^ 2 + (z - pz) ^ 2)
@@ -538,30 +548,26 @@ local function tick()
     emit(table.concat(out, "|"))
 end
 
--- The loop only runs once the game has actually entered a level (the player
--- controller has restarted at least once) and a settle delay has passed, so
--- nothing touches engine objects while the game is still booting.
+-- The tick only runs once the game has entered a level (PlayerController:ClientRestart
+-- fired) plus a settle delay.  Everything executes on the game thread: UE4SS's
+-- async thread (LoopAsync) must never run Lua concurrently with the game thread.
 local ready = false
 local readyAt = 0
 local tickErrors = 0
+local loopHandle = nil
+local loopMode = "none"
 
-local function schedule()
-    if not ready or nowMs() < readyAt then return false end
-    if pending then return false end
-    pending = true
-    ExecuteInGameThread(function()
-        local ok, err = pcall(tick)
-        if not ok then
-            pending = false
-            tickErrors = tickErrors + 1
-            if cfg.debug or tickErrors <= 3 then log("tick error: " .. tostring(err)) end
-            if tickErrors > 200 then
-                ready = false
-                log("too many tick errors, telemetry loop paused until the next level load")
-            end
+local function guardedTick()
+    if not ready or nowMs() < readyAt then return end
+    local ok, err = pcall(tick)
+    if not ok then
+        tickErrors = tickErrors + 1
+        if cfg.debug or tickErrors <= 3 then log("tick error: " .. tostring(err)) end
+        if tickErrors > 200 then
+            ready = false
+            log("too many tick errors, telemetry paused until the next level load")
         end
-    end)
-    return false
+    end
 end
 
 local function onLevelEntered()
@@ -570,8 +576,8 @@ local function onLevelEntered()
     tickErrors = 0
     readyAt = nowMs() + (tonumber(cfg.start_delay_ms) or 3000)
     ready = true
-    writeSmallFile(STATUS_FILE, string.format("loaded=1\nproto=%d\ntime=%s\npipe=%s\nfile=%s\nlevel_entered=1\n",
-        PROTO, os.date("%Y-%m-%d %H:%M:%S"), cfg.pipe, TELEMETRY_FILE))
+    writeSmallFile(STATUS_FILE, string.format("loaded=1\nproto=%d\ntime=%s\npipe=%s\nfile=%s\nlevel_entered=1\nloop=%s\n",
+        PROTO, os.date("%Y-%m-%d %H:%M:%S"), cfg.pipe, TELEMETRY_FILE, loopMode))
 end
 
 -- ---------------------------------------------------------------------
@@ -592,6 +598,28 @@ if not okHook then
     pcall(function() ExecuteWithDelay(15000, function() pcall(onLevelEntered) end) end)
 end
 
-local okLoop, errLoop = pcall(function() LoopAsync(cfg.tick_ms, schedule) end)
-if not okLoop then log("LoopAsync failed: " .. tostring(errLoop)) end
-log(string.format("telemetry mod loaded (proto %d), waiting for a level; pipe=%s", PROTO, cfg.pipe))
+-- pick the best game-thread loop this UE4SS build offers
+local okLoop, errLoop = pcall(function()
+    if LoopInGameThreadAfterFrames ~= nil and EngineTickAvailable then
+        loopHandle = LoopInGameThreadAfterFrames(1, guardedTick)      -- exactly once per rendered frame
+        loopMode = "engine_tick"
+    elseif LoopInGameThreadWithDelay ~= nil then
+        loopHandle = LoopInGameThreadWithDelay(cfg.tick_ms, guardedTick)  -- game thread, timer based
+        loopMode = "game_thread_delay"
+    else
+        -- very old UE4SS: async timer that only *schedules* game-thread work (legacy path)
+        local pending = false
+        LoopAsync(cfg.tick_ms, function()
+            if pending then return false end
+            pending = true
+            ExecuteInGameThread(function()
+                pending = false
+                guardedTick()
+            end)
+            return false
+        end)
+        loopMode = "legacy_async"
+    end
+end)
+if not okLoop then log("could not start the telemetry loop: " .. tostring(errLoop)) end
+log(string.format("telemetry mod loaded (proto %d, loop=%s), waiting for a level; pipe=%s", PROTO, loopMode, cfg.pipe))
