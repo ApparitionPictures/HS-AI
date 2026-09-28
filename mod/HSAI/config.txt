@@ -1,0 +1,10 @@
+# HSAI telemetry mod settings (installed to <game>\HalfSwordUE5\Binaries\Win64\ue4ss\Mods\HSAI\config.txt)
+pipe = \\.\pipe\hsai_telemetry
+tick_ms = 6
+start_delay_ms = 3000
+rescan_ms = 2000
+max_enemies = 4
+bones = head, hand_r, hand_l, pelvis
+classes = Willie_BP_C
+file_fallback = 1
+debug = 0
